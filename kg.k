@@ -52,7 +52,7 @@ p.block: (orp`item; opt`stmts) / so we can have stuff on the last line, before t
 p.stmt: opt(alt(`ifStmt `doStmt `whileStmt `define `expr))
 p.define: (`lvalue `COLON `expr)
 p.expr: rep(alt(`amend; `cond; `value; (rep `op); (`LPAREN; `expr; `RPAREN); `ADV))
-p.op: ((`PRIM `DOT `COLON `DASH `IDENT); `tail)
+p.op: (alt(`PRIM `DOT `COLON `DASH `IDENT); `tail)
 p.value: alt(`lvalue; ((alt `lambda `noun); `tail))
 p.lvalue: (`IDENT `tail)
 p.lambda: (`LBRACE; (opt `sig); `block; `RBRACE)
@@ -83,6 +83,17 @@ node:{@[x; `path`here; :; (((,x.here),x.path); _n) ]}
 done:{@[x; `path`here; :; (-1 _ x.path; ((*x.path),x.here))]}
 take:{@[x; `text; :; y _ x.text]}
 
+
+/ -- pretty printer for ASTs ----------------------------------
+
+join:{ 1 _ ,/ x,'y }
+pps:{t:4:x / pps : pretty print to string
+    :[-3=t; :5:x                       / strings
+      ~0<t; :"(",join[" ";_f' x],")"   / other lists
+       4=t; :"`",$x                    / symbols
+       :5:x ]}                         / others
+pp:{`0:pps[x.here],"\n"}
+
 / -- grammar interpreter --------------------------------------
 
 skipws:{[s] / skip whitespace to reach start of next token.
@@ -111,8 +122,9 @@ g.emp:{[r; s] :s} / always match, consume nothing, return state unchanged.
 
 g.opt:{[r; s] :g.alt[(r;`emp`); s]}
 
-g.rep:{[r; s] s:match[r;s]           / require at least one match
-    while[~*m: .[match; (r;s); :]    / then keep matching until we fail
+g.rep:{[r; s]
+    s:match[r;s]                      / require at least one match
+    while[0=*m: .[match; (r;s); :]    / then keep matching until we fail
         s:m 1]
     :s}
 
@@ -135,11 +147,14 @@ g.seq:{[r; s] i:0
         i+:1]
     :s}
 
-g.rul:{[nm;r;s]  / rul[`name;rule;state]
-    s0:emit[node[s]; nm] / create a new node, and emit the name as a header
-    if[0=*m:.[match;(r;s0);:]; :done[m 1]] / `done` ends the node
-    '"failed to match rule `",($n),": ",$m 1}
+g.grp:{[tag;r;s]  / create a new node, and emit the name as a header
+    s:emit[node[s];tag]
+    s:match[r;s]
+    :done[s]}
 
+g.rul:{[nm;r;s]  / rul[`name;rule;state]
+    if[0=*m:.[match;(r;s);:]; :m 1]
+    '"failed to match rule `",($nm),": ",$m 1}
 
 match:{[r;s] / .kg.match
     / `0:"| match: ",(5:r),"\n"
@@ -158,34 +173,37 @@ match:{[r;s] / .kg.match
 parse:{[text] /.kg.parse
     / match the top-level grammar rule for k
     / src:str -> ast
-    :match[p.k; init[text]]}
+    :match[p.k; init[text,"\n"]]}
 
 
 /-- tests ----------------------------------------------
 
-assert:{[t;msg] if[~t; 'msg]}
-
-selftest:{ / .kg.selftest (self-parsing test)
-    m:parse[6:"kg.k"]
-    :m.here}
+chek:{[t;msg] if[~t; 'msg]} / check assertion
+cheq:{chek[x~y; "expected: ",($x),"\nbut got: ",($y),"\n"]} / check equality
+chkm:{m:re.match[x;y]; chek[m[1;0]>0; "expected /",x,"/ to match ",5:y]} / does the regex match the string? (must match 1+ char)
+chka:{m:.[match; (x; init[y]); :] / parse y against rule x and check that resulting ast looks like z
+    chek[~m 0; "expected rule ",pps[x]," to match ",5:y]
+    if[~z~_n; cheq[z; pps ((m 1).here)]]}
+chkp:chka[;;_n] / just check that the parse succeeded
 
 unittest:{ / TODO: make these into actual unit tests... :)
 
-    a:init[`]; assert[()~a.path; "a.path?"]
-    b:node[a]; assert[(,())~b.path; "b.path?"]; assert[_n~b.here; "b.here?"]
-    c:done[b]; assert[()~c.path; "c.path?"]; assert[(,_n)~c.here; "c.here?"]
+    a:init[`]; chek[()~a.path; "a.path?"]
+    b:node[a]; chek[(,())~b.path; "b.path?"]; chek[_n~b.here; "b.here?"]
+    c:done[b]; chek[()~c.path; "c.path?"];    chek[(,_n)~c.here; "c.here?"]
 
-    s:skipws init[,"\n"]; assert[s.text~,"\n"; "should not consume \\n as whitespace!"]
+    s:skipws init[,"\n"]; chek[s.text~,"\n"; "should not consume \\n as whitespace!"]
 
-    \re.match["^a";"abc"]
-    \match[(`LBRACK; `RBRACK); init["  [ ]  "]]
-    \match[(`LBRACK; `RBRACK); init["[]"]]
-    \match[`NL; init[,"\n"]]
-    \match[`COMMENT`NL; init["/ hello world?\n"]]
-    \match[`NUM; init[" 2+2 "]]
-    \match[`expr; init[" 2+2 "]]
-    \match[`expr; init[" f[!2+2] "]]
-    }
+    chkm["^a";"abc"]
+    chkp[(`LBRACK; `RBRACK); "  [ ]  "]
+    chkp[(`LBRACK; `RBRACK); "[]"]
+    chkp[`NL; ,"\n"]
+    chkp[`COMMENT`NL; "/ hello world?\n"]
+    chkp[`NUM; " 2+2 "]
+    chkp[`expr; " 2+2 "]
+    chkp[`expr; "f[!2+2]"]
+    pp match[p.k; init[5:_f]] / check this very function for parsability
+    / m:parse[6:"kg.k"] check this whole file...
+}
 
 unittest[]
-/ `0:5: selftest[]
